@@ -1544,6 +1544,14 @@ func (s *Server) runAgent(c echo.Context) error {
 	// Run the agent in the background context so it continues even if client disconnects
 	streamChan := rt.RunStream(backgroundCtx, sess)
 	
+	// Monitor for client disconnection in a separate goroutine
+	clientDisconnected := make(chan struct{})
+	go func() {
+		<-streamCtx.Done()
+		slog.Info("Client disconnected, agent continues in background", "session_id", sess.ID)
+		close(clientDisconnected)
+	}()
+	
 	// Stream events to client while connected
 	for {
 		select {
@@ -1553,30 +1561,43 @@ func (s *Server) runAgent(c echo.Context) error {
 				slog.Debug("Agent stream completed", "session_id", sess.ID)
 				return nil
 			}
-			data, err := json.Marshal(event)
-			if err != nil {
-				return echo.NewHTTPError(http.StatusInternalServerError, "failed to marshal event")
+			
+			// Try to send to client, but don't block if they disconnected
+			select {
+			case <-clientDisconnected:
+				// Client disconnected, stop trying to send but keep consuming events
+				slog.Debug("Client disconnected during streaming, continuing in background", "session_id", sess.ID)
+				
+				// Continue consuming events in background to keep agent running
+				go func() {
+					for range streamChan {
+						// Keep consuming to let agent complete
+					}
+					slog.Debug("Background processing completed", "session_id", sess.ID)
+				}()
+				return nil
+				
+			default:
+				// Client still connected, send the event
+				data, err := json.Marshal(event)
+				if err != nil {
+					return echo.NewHTTPError(http.StatusInternalServerError, "failed to marshal event")
+				}
+				fmt.Fprintf(c.Response(), "data: %s\n\n", string(data))
+				c.Response().Flush()
 			}
-			fmt.Fprintf(c.Response(), "data: %s\n\n", string(data))
-			c.Response().Flush()
 			
-		case <-streamCtx.Done():
-			// Client disconnected, but agent continues in background
-			slog.Debug("Client disconnected, agent continues in background", "session_id", sess.ID)
+		case <-clientDisconnected:
+			// Client disconnected while we were waiting for events
+			slog.Info("Client disconnected while waiting for events, continuing in background", "session_id", sess.ID)
 			
-			// Continue processing in background
+			// Continue consuming events in background
 			go func() {
 				for range streamChan {
-					// Drain the channel to let the agent complete
-					// Events are already being saved to the session
+					// Keep consuming to let agent complete
 				}
-				// Update session when done
-				if err := s.sessionStore.UpdateSession(context.Background(), sess); err != nil {
-					slog.Error("Failed to update session after background completion", "session_id", sess.ID, "error", err)
-				}
-				slog.Debug("Background agent processing completed", "session_id", sess.ID)
+				slog.Debug("Background processing completed after disconnect", "session_id", sess.ID)
 			}()
-			
 			return nil
 		}
 	}
