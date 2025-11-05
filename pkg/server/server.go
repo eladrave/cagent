@@ -1525,8 +1525,9 @@ func (s *Server) runAgent(c echo.Context) error {
 	c.Response().Header().Set("Connection", "keep-alive")
 	c.Response().WriteHeader(http.StatusOK)
 
-	// Create a cancellable context for this stream
-	streamCtx, cancel := context.WithCancel(c.Request().Context())
+	// Create a background context with timeout for long-running sessions
+	// This allows the session to continue even if the client disconnects
+	backgroundCtx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	s.cancelsMu.Lock()
 	s.runtimeCancels[sess.ID] = cancel
 	s.cancelsMu.Unlock()
@@ -1536,14 +1537,48 @@ func (s *Server) runAgent(c echo.Context) error {
 		s.cancelsMu.Unlock()
 	}()
 
-	streamChan := rt.RunStream(streamCtx, sess)
-	for event := range streamChan {
-		data, err := json.Marshal(event)
-		if err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to marshal event")
+	// Create a separate context for SSE streaming that's tied to the request
+	// This will cancel when the client disconnects, stopping the SSE stream
+	streamCtx := c.Request().Context()
+
+	// Run the agent in the background context so it continues even if client disconnects
+	streamChan := rt.RunStream(backgroundCtx, sess)
+	
+	// Stream events to client while connected
+	for {
+		select {
+		case event, ok := <-streamChan:
+			if !ok {
+				// Channel closed, agent finished
+				slog.Debug("Agent stream completed", "session_id", sess.ID)
+				return nil
+			}
+			data, err := json.Marshal(event)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "failed to marshal event")
+			}
+			fmt.Fprintf(c.Response(), "data: %s\n\n", string(data))
+			c.Response().Flush()
+			
+		case <-streamCtx.Done():
+			// Client disconnected, but agent continues in background
+			slog.Debug("Client disconnected, agent continues in background", "session_id", sess.ID)
+			
+			// Continue processing in background
+			go func() {
+				for range streamChan {
+					// Drain the channel to let the agent complete
+					// Events are already being saved to the session
+				}
+				// Update session when done
+				if err := s.sessionStore.UpdateSession(context.Background(), sess); err != nil {
+					slog.Error("Failed to update session after background completion", "session_id", sess.ID, "error", err)
+				}
+				slog.Debug("Background agent processing completed", "session_id", sess.ID)
+			}()
+			
+			return nil
 		}
-		fmt.Fprintf(c.Response(), "data: %s\n\n", string(data))
-		c.Response().Flush()
 	}
 
 	if err := s.sessionStore.UpdateSession(c.Request().Context(), sess); err != nil {
