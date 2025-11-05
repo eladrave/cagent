@@ -688,6 +688,16 @@ func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Sessi
 			} else {
 				slog.Debug("Tools not approved, waiting for resume", "tool", toolCall.Function.Name, "session_id", sess.ID)
 
+				// Add approval request as a message so it persists in the session
+				approvalMsg := chat.Message{
+					Role:      chat.MessageRoleAssistant,
+					Content:   fmt.Sprintf("I need approval to use the '%s' tool. Please approve or reject this action.", toolCall.Function.Name),
+					CreatedAt: time.Now().Format(time.RFC3339),
+					// Store tool call info in metadata for later processing
+					ToolCalls: []tools.ToolCall{toolCall},
+				}
+				sess.AddMessage(session.NewAgentMessage(a, &approvalMsg))
+
 				events <- ToolCallConfirmation(toolCall, tool, a.Name())
 
 				select {
@@ -732,6 +742,17 @@ func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Sessi
 				r.runTool(callCtx, tool, toolCall, events, sess, a)
 			} else {
 				slog.Debug("Tools not approved, waiting for resume", "tool", toolCall.Function.Name, "session_id", sess.ID)
+				
+				// Add approval request as a message so it persists in the session
+				approvalMsg := chat.Message{
+					Role:      chat.MessageRoleAssistant,
+					Content:   fmt.Sprintf("I need approval to use the '%s' tool: %s\n\nPlease approve or reject this action.", tool.Name, tool.Annotations.Title),
+					CreatedAt: time.Now().Format(time.RFC3339),
+					// Store tool call info in metadata for later processing
+					ToolCalls: []tools.ToolCall{toolCall},
+				}
+				sess.AddMessage(session.NewAgentMessage(a, &approvalMsg))
+				
 				events <- ToolCallConfirmation(toolCall, tool, a.Name())
 				select {
 				case cType := <-r.resumeChan:
