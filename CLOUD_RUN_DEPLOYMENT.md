@@ -169,12 +169,28 @@ gcloud run services update cagent-web \
 
 ### CORS Configuration
 
-The API server is configured to allow CORS requests from:
-- https://cagent-web-950783879036.us-central1.run.app
+The API server uses the `CORS_ALLOWED_ORIGINS` environment variable to configure allowed origins. This is a comma-separated list of URLs that are allowed to make requests to the API.
+
+**Setting CORS for Cloud Run:**
+```bash
+# Update existing service with CORS configuration
+gcloud run services update cagent-api \
+  --region us-central1 \
+  --update-env-vars "CORS_ALLOWED_ORIGINS=https://cagent-web-950783879036.us-central1.run.app,https://chat.eladrave.com"
+```
+
+**Default origins (if env var not set):**
 - `http://localhost:8000` (local development)
 - `http://localhost:8080` (Docker local)
+- `http://localhost:3000` (alternate local development)
 
-When deploying, update the CORS configuration in `pkg/server/server.go` to include your actual web frontend URL.
+**Adding new domains:**
+Simply update the environment variable without rebuilding:
+```bash
+gcloud run services update cagent-api \
+  --region us-central1 \
+  --update-env-vars "CORS_ALLOWED_ORIGINS=<comma-separated-list-of-origins>"
+```
 
 ## Deployment Environments
 

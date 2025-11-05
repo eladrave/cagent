@@ -94,14 +94,25 @@ func New(sessionStore session.Store, runConfig config.RuntimeConfig, teams map[s
 	e := echo.New()
 	
 	// Configure CORS to allow requests from web frontend
+	// Read allowed origins from environment variable
+	allowedOriginsEnv := os.Getenv("CORS_ALLOWED_ORIGINS")
+	if allowedOriginsEnv == "" {
+		// Default to common development origins if not set
+		allowedOriginsEnv = "http://localhost:8000,http://localhost:8080,http://localhost:3000"
+	}
+	
+	// Parse comma-separated origins
+	allowedOrigins := strings.Split(allowedOriginsEnv, ",")
+	for i := range allowedOrigins {
+		allowedOrigins[i] = strings.TrimSpace(allowedOrigins[i])
+	}
+	
+	slog.Info("CORS configuration", "allowed_origins", allowedOrigins)
+	
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{
-			"https://cagent-web-950783879036.us-central1.run.app",
-			"http://localhost:8000",
-			"http://localhost:8080",
-		},
-		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
-		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
+		AllowOrigins:     allowedOrigins,
+		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
+		AllowHeaders:     []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
 		AllowCredentials: true,
 	}))
 	e.Use(middleware.Logger())
